@@ -6,11 +6,12 @@ an executive summary via Claude, delivered by email.
 import os
 import smtplib
 import json
-from datetime import date
+from datetime import date, timedelta
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
 import schwab
 import anthropic
+import yfinance as yf
 
 load_dotenv()
 
@@ -70,10 +71,53 @@ def fetch_portfolio(client) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Earnings calendar
+# ---------------------------------------------------------------------------
+
+EARNINGS_LOOKAHEAD_DAYS = 16  # options premium + analyst revisions start ~2 weeks out; 16d gives buffer for date shifts
+
+
+def fetch_earnings_calendar(portfolio: list) -> dict:
+    """
+    Return {symbol: earnings_date_str} for equity holdings with earnings
+    within EARNINGS_LOOKAHEAD_DAYS days. Silently skips symbols that fail
+    or have no upcoming date (ETFs, cash, etc.).
+    """
+    today = date.today()
+    cutoff = today + timedelta(days=EARNINGS_LOOKAHEAD_DAYS)
+
+    symbols = {
+        pos["symbol"]
+        for acct in portfolio
+        for pos in acct["positions"]
+        if pos["asset_type"] in ("EQUITY", "ETF", "")
+        and pos["symbol"].isalpha()  # skip bond tickers, options, etc.
+    }
+
+    upcoming = {}
+    for symbol in sorted(symbols):
+        try:
+            cal = yf.Ticker(symbol).calendar
+            if not cal:
+                continue
+            # yfinance returns a dict; 'Earnings Date' is a list of Timestamps
+            dates = cal.get("Earnings Date", [])
+            if not dates:
+                continue
+            earliest = min(dates).date() if hasattr(dates[0], "date") else dates[0]
+            if today <= earliest <= cutoff:
+                upcoming[symbol] = earliest.strftime("%b %d")
+        except Exception:
+            continue  # non-critical — don't let a bad ticker break the brief
+
+    return upcoming
+
+
+# ---------------------------------------------------------------------------
 # Claude summary
 # ---------------------------------------------------------------------------
 
-def build_prompt(portfolio: dict, today: date) -> str:
+def build_prompt(portfolio: dict, today: date, earnings: dict | None = None) -> str:
     total_value = sum(a["total_value"] for a in portfolio)
     total_day_pl = sum(a["day_pl"] for a in portfolio)
 
@@ -97,12 +141,19 @@ def build_prompt(portfolio: dict, today: date) -> str:
                 f"({pos['day_pl_pct']:+.2f}% today)"
             )
 
+    if earnings:
+        lines += ["", "Upcoming earnings (within 14 days):"]
+        for symbol, dt in sorted(earnings.items()):
+            lines.append(f"  {symbol}: reports {dt}")
+
     lines += [
         "",
         "Write a concise 5–7 sentence executive summary of this portfolio snapshot. Include:",
         "- Overall portfolio performance today",
-        "- Which accounts or positions are driving gains or losses",
-        "- Any notable movers worth watching",
+        "- Which accounts or positions are driving gains or losses — anchor explanations to",
+        "  macro drivers first (trade policy, Fed, fiscal) before sector or company narratives",
+        "- For any holding with upcoming earnings flagged above, note the date and what",
+        "  investors are likely repricing ahead of that report",
         "- One sentence on what to monitor for the rest of the session",
         "Use plain language. No bullet points — flowing prose only.",
     ]
@@ -110,9 +161,9 @@ def build_prompt(portfolio: dict, today: date) -> str:
     return "\n".join(lines)
 
 
-def generate_summary(portfolio: dict, today: date) -> str:
+def generate_summary(portfolio: dict, today: date, earnings: dict | None = None) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    prompt = build_prompt(portfolio, today)
+    prompt = build_prompt(portfolio, today, earnings)
 
     message = client.messages.create(
         model="claude-opus-4-6",
@@ -158,9 +209,16 @@ def main():
     total_day_pl = sum(a["day_pl"] for a in portfolio)
 
     print(f"Total value: ${total_value:,.2f} | Day P&L: ${total_day_pl:+,.2f}")
-    print("Generating summary...")
 
-    summary = generate_summary(portfolio, today)
+    print("Fetching earnings calendar...")
+    earnings = fetch_earnings_calendar(portfolio)
+    if earnings:
+        print(f"Upcoming earnings ({EARNINGS_LOOKAHEAD_DAYS}d window): {', '.join(f'{s} {d}' for s, d in sorted(earnings.items()))}")
+    else:
+        print("No earnings within lookahead window.")
+
+    print("Generating summary...")
+    summary = generate_summary(portfolio, today, earnings)
     print("\n--- Summary ---")
     print(summary)
 
