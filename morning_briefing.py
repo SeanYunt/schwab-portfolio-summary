@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import anthropic
 import yaml
 import yfinance as yf
+from authlib.integrations.base_client.errors import OAuthError
 
 from portfolio_summary import get_schwab_client, fetch_portfolio, fetch_earnings_calendar, EARNINGS_LOOKAHEAD_DAYS
 
@@ -370,8 +371,21 @@ def main():
     print(f"=== Morning Briefing — {today} ===")
 
     print("Fetching portfolio...")
-    schwab_client = get_schwab_client()
-    portfolio = fetch_portfolio(schwab_client)
+    try:
+        schwab_client = get_schwab_client()
+        portfolio = fetch_portfolio(schwab_client)
+    except OAuthError:
+        subject = f"Morning Briefing FAILED | {today.strftime('%b %d')} | Re-auth required"
+        body = (
+            f"Morning Briefing could not run on {today}.\n\n"
+            "The Schwab OAuth token has expired and needs to be refreshed.\n\n"
+            "To fix, run:\n"
+            "    python auth.py\n\n"
+            "Then re-run the morning briefing."
+        )
+        send_email(subject, body)
+        print("OAuth token expired — warning email sent.")
+        return
     total_value = sum(a["total_value"] for a in portfolio)
     total_day_pl = sum(a["day_pl"] for a in portfolio)
     print(f"  ${total_value:,.2f} | Day P&L: ${total_day_pl:+,.2f}")
