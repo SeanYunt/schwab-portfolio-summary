@@ -183,47 +183,81 @@ def _build_analysis_prompt(candidates: list[dict]) -> str:
             for a in c["news"]
         ) or "  (no recent news found)"
 
+        dip = c["pct_from_high"]
+        if dip <= -35:
+            tier = "TIER 3 (>35% dip — high skepticism required; default to UNCLEAR unless evidence is strong)"
+        elif dip <= -20:
+            tier = "TIER 2 (20–35% dip — elevated scrutiny; macro alone is insufficient)"
+        else:
+            tier = "TIER 1 (10–20% dip — standard screening)"
+
         sections.append(
-            f"### {c['ticker']} — {c['name']} (${c['market_cap_b']:.0f}B mkt cap)\n"
+            f"### {c['ticker']} — {c['name']} (${c['market_cap_b']:.0f}B mkt cap) [{tier}]\n"
             f"Current: ${c['current_price']:.2f} | 52w high: ${c['high_52w']:.2f} | "
             f"Dip: {c['pct_from_high']:.1f}%\n\n"
             f"Recent news:\n{news_lines}"
         )
 
-    return f"""You are a value-oriented equity analyst screening large-cap blue-chip stocks that have pulled back significantly from their 52-week highs.
+    return f"""You are a skeptical value-oriented equity analyst screening large-cap stocks for genuine buying opportunities. Your job is to protect capital first, find opportunities second.
 
-For each stock below, reason about whether the dip is:
+Each stock is labeled with a dip magnitude tier. Apply the corresponding standard of evidence:
 
-RECOVERABLE — temporary, non-structural disruption:
-  - Labor strike or work stoppage
-  - One bad quarter from an identifiable, non-recurring cost spike
-  - Weather, logistics, or supply-chain disruption
-  - Regulatory uncertainty pending a known resolution
-  - Sentiment bleed from unrelated sector news or macro fear
-  - Short-term input cost pressure without underlying demand destruction
+TIER 1 (10–20% dip): Standard screening. A credible temporary catalyst qualifies.
+TIER 2 (20–35% dip): Elevated scrutiny. You must identify a specific, named catalyst — not general macro sentiment. A broad "risk-off selloff" does not qualify. The 52-week high may have been inflated; cheap-vs-the-high is not the same as cheap.
+TIER 3 (>35% dip): High skepticism. A drawdown this deep usually means the market knows something that hasn't fully surfaced in the news. Default to UNCLEAR unless you have strong, specific positive evidence. Absence of bad news is NOT evidence of recoverability at this magnitude.
+
+VERDICT DEFINITIONS:
+
+RECOVERABLE — a specific, identifiable, temporary disruption with a clear resolution mechanism:
+  - Named labor strike or work stoppage with resolution path
+  - One bad quarter from a specific, non-recurring cost item (name it)
+  - Named weather, logistics, or supply-chain event with known end date
+  - Specific regulatory uncertainty with a known decision timeline
+  - Input cost pressure tied to a commodity with clear mean-reversion history
+  DO NOT use this verdict for: broad macro selloffs, sector rotation, "sentiment," valuation compression, or rate fears — these are not temporary catalysts with predictable resolution.
+
+UNCLEAR — evidence is insufficient, contradictory, or the dip magnitude exceeds what the news explains:
+  This is a WARNING verdict, not a soft buy signal. It means: do not act until more information is available.
+  Use UNCLEAR when: the dip is macro-attributed but macro headwinds may persist; the news explains only part of the drawdown; or the stock is TIER 3 without strong positive evidence.
 
 STRUCTURAL — lasting damage that changes the fundamental thesis:
   - Demand erosion or secular volume decline
-  - Competitive disruption or market share loss to a new entrant
-  - Management integrity or governance problems
-  - Balance sheet deterioration (excessive leverage, liquidity concerns)
+  - Competitive disruption or market share loss
+  - Management or governance problems
+  - Balance sheet deterioration
   - Product obsolescence or technology displacement
   - Regulatory action directly threatening the core business model
 
-For each RECOVERABLE stock — or where evidence is insufficient to rule it out — output exactly this block:
+MACRO RULE: "Broad market selloff" or "macro risk-off" is only a valid RECOVERABLE catalyst if you can name: (1) the specific macro event, (2) why it will reverse within your stated timeframe, and (3) why this stock specifically recovers when it does. If you cannot do all three, the verdict is UNCLEAR.
 
+Output format:
+
+For RECOVERABLE stocks:
 ---
 TICKER: {{ticker}}
-VERDICT: RECOVERABLE | UNCLEAR
-CATALYST: [one sentence — the specific event or news driving the dip]
-RATIONALE: [one paragraph — why the disruption is likely temporary and how it resolves]
-TIMEFRAME: [expected resolution window, e.g., "1–2 quarters", "next earnings cycle"]
+VERDICT: RECOVERABLE
+TIER: [1 / 2 / 3]
+CATALYST: [one sentence — the specific named event driving the dip]
+RECOVERY_MECHANISM: [what specifically changes to restore price, and what triggers that change]
+RATIONALE: [one paragraph — why the disruption is temporary and bounded]
+TIMEFRAME: [realistic window with justification — do not default to "1–2 quarters" without reasoning]
+CONVICTION: [HIGH or MEDIUM — and one sentence explaining why not lower]
 ---
 
-For STRUCTURAL cases, output a single line:
+For UNCLEAR stocks:
+---
+TICKER: {{ticker}}
+VERDICT: UNCLEAR — DO NOT ACT
+TIER: [1 / 2 / 3]
+RISK: [what specifically is unknown, contradictory, or unexplained by the news]
+MISSING_INFO: [what data or event would resolve the uncertainty]
+REVISIT: [what to watch — earnings date, regulatory decision, macro indicator]
+---
+
+For STRUCTURAL cases, one line:
 TICKER: {{ticker}} — STRUCTURAL: [one-sentence reason]
 
-If none qualify as recoverable or unclear, say so explicitly. Make a call — do not hedge every sentence.
+If none qualify as recoverable, say so explicitly. Make a call — do not hedge every sentence.
 
 --- STOCKS TO ANALYZE ---
 
