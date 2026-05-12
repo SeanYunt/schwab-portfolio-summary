@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import smtplib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -341,6 +342,27 @@ def generate_briefing(portfolio: list, news: str, today: date, earnings: dict | 
     return message.content[0].text
 
 
+def generate_briefing_local(portfolio: list, news: str, today: date, earnings: dict | None = None) -> str | None:
+    """Run the same briefing prompt against a local Ollama instance. Returns None if not configured."""
+    url = os.environ.get("LOCAL_LLM_URL", "").strip()
+    if not url:
+        return None
+    try:
+        from openai import OpenAI
+        model = os.environ.get("LOCAL_LLM_MODEL", "llama3.1:8b").strip()
+        client = OpenAI(base_url=url, api_key="ollama")
+        prompt = build_briefing_prompt(portfolio, news, today, earnings)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"  Local LLM error: {e}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Email
 # ---------------------------------------------------------------------------
@@ -408,16 +430,31 @@ def main():
         count = news.count("--- Result ")
         print(f"  {count} new article(s) found.")
 
-    print("Generating briefing with Claude...")
-    briefing = generate_briefing(portfolio, news, today, earnings)
+    print("Generating briefing (Claude + local LLM in parallel)...")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_claude = executor.submit(generate_briefing, portfolio, news, today, earnings)
+        future_local = executor.submit(generate_briefing_local, portfolio, news, today, earnings)
+        claude_text = future_claude.result()
+        local_text = future_local.result()
+
+    if local_text:
+        model_label = os.environ.get("LOCAL_LLM_MODEL", "llama3.1:8b").strip()
+        body = (
+            f"=== Claude ===\n\n{claude_text}"
+            f"\n\n{'─' * 60}\n\n"
+            f"=== {model_label} (local) ===\n\n{local_text}"
+        )
+    else:
+        body = claude_text
+
     subject = (
         f"Morning Briefing | {today.strftime('%b %d')} | "
         f"${total_value:,.0f} | Day: ${total_day_pl:+,.0f}"
     )
-    send_email(subject, briefing)
+    send_email(subject, body)
 
     print("\n--- Briefing ---")
-    print(briefing.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8"))
+    print(body.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8"))
 
 
 if __name__ == "__main__":
