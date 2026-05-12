@@ -1,0 +1,24 @@
+services:
+  morning-briefing:
+    build: .
+    image: schwab-portfolio
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./token.json:/app/token.json
+      - ${M2M_PATH:-/home/sean/messages-to-midnight}:/opt/messages-to-midnight
+    environment:
+      SCAN_SCRIPT_PATH: /opt/messages-to-midnight/scripts/scan.py
+      SEARXNG_INTERNAL_URL: http://localhost:8080
+    command: python morning_briefing.py
+
+  opportunity-scanner:
+    build: .
+    image: schwab-portfolio
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./token.json:/app/token.json
+    environment:
+      SEARXNG_INTERNAL_URL: http://localhost:8080
+    command: python opportunity_scanner.py
