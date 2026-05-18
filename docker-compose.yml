@@ -9,7 +9,7 @@ services:
       - ${M2M_PATH:-/home/sean/messages-to-midnight}:/opt/messages-to-midnight
     environment:
       SCAN_SCRIPT_PATH: /opt/messages-to-midnight/scripts/scan.py
-      SEARXNG_INTERNAL_URL: http://localhost:8080
+      SEARXNG_INTERNAL_URL: http://localhost:8081
     command: python morning_briefing.py
 
   opportunity-scanner:
@@ -20,5 +20,5 @@ services:
     volumes:
       - ./token.json:/app/token.json
     environment:
-      SEARXNG_INTERNAL_URL: http://localhost:8080
+      SEARXNG_INTERNAL_URL: http://localhost:8081
     command: python opportunity_scanner.py
