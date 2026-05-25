@@ -224,6 +224,8 @@ def update_portfolio_subjects(portfolio: list) -> None:
 
 def run_news_scan() -> str:
     """Run scan.py and return its stdout output."""
+    if not SCAN_SCRIPT:
+        return "News scan error: SCAN_SCRIPT_PATH not configured."
     try:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -424,7 +426,9 @@ def main():
 
     print("Running news scan...")
     news = run_news_scan()
-    if "NO_NEW_RESULTS" in news:
+    if news.startswith("News scan error"):
+        print(f"  WARNING: {news}")
+    elif "NO_NEW_RESULTS" in news:
         print("  No new news signals.")
     else:
         count = news.count("--- Result ")

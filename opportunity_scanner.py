@@ -102,8 +102,12 @@ def _search_one(query: str, base_url: str) -> list[dict] | None:
         return None
 
 
-def fetch_news(ticker: str, company_name: str) -> list[dict]:
-    """Fetch recent news articles for a ticker via SearXNG with URL fallback."""
+def fetch_news(ticker: str, company_name: str) -> tuple[list[dict], bool]:
+    """Fetch recent news articles for a ticker via SearXNG with URL fallback.
+
+    Returns (articles, searxng_reachable). searxng_reachable is False only when
+    every configured URL fails with a connection error (not merely empty results).
+    """
     query = f'"{company_name}" {ticker} stock'
     for base_url in _searxng_urls():
         results = _search_one(query, base_url)
@@ -116,8 +120,8 @@ def fetch_news(ticker: str, company_name: str) -> list[dict]:
                     "url": r.get("url", ""),
                 }
                 for r in results[:NEWS_ARTICLES_PER_TICKER]
-            ]
-    return []
+            ], True
+    return [], False
 
 
 # ---------------------------------------------------------------------------
@@ -367,13 +371,18 @@ def main() -> None:
 
     # Enrich with company name and news
     print("Fetching company names and news...")
+    searxng_failures = 0
     for c in candidates:
         try:
             c["name"] = yf.Ticker(c["ticker"]).info.get("shortName") or c["ticker"]
         except Exception:
             c["name"] = c["ticker"]
-        c["news"] = fetch_news(c["ticker"], c["name"])
+        c["news"], reachable = fetch_news(c["ticker"], c["name"])
+        if not reachable:
+            searxng_failures += 1
         print(f"  {c['ticker']}: {c['name']} — {len(c['news'])} articles")
+    if searxng_failures:
+        print(f"  WARNING: SearXNG unreachable for {searxng_failures}/{len(candidates)} ticker(s) — Claude will analyze without news context")
 
     # Claude assessment
     analysis = analyze_candidates(candidates)
