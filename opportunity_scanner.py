@@ -458,9 +458,17 @@ def main() -> None:
     searxng_failures = 0
     for i, c in enumerate(candidates):
         try:
-            c["name"] = yf.Ticker(c["ticker"]).info.get("shortName") or c["ticker"]
-        except Exception:
+            info = yf.Ticker(c["ticker"]).info
+            c["name"] = info.get("shortName") or c["ticker"]
+            if NEWS_DEBUG:
+                print(
+                    f"    [name] {c['ticker']}: shortName={info.get('shortName')!r} "
+                    f"longName={info.get('longName')!r} displayName={info.get('displayName')!r}"
+                )
+        except Exception as e:
             c["name"] = c["ticker"]
+            if NEWS_DEBUG:
+                print(f"    [name] {c['ticker']}: lookup failed — {type(e).__name__}: {e}")
         c["news"], searxng_ok = fetch_news(c["ticker"])
         if not searxng_ok:
             searxng_failures += 1
