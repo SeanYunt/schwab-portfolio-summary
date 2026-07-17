@@ -144,7 +144,7 @@ def _search_one(query: str, base_url: str) -> list[dict] | None:
     return results
 
 
-def fetch_news(ticker: str) -> tuple[list[dict], bool]:
+def fetch_news(ticker: str, company_name: str) -> tuple[list[dict], bool]:
     """Fetch recent news articles for a ticker via SearXNG with URL fallback.
 
     Returns (articles, searxng_ok). searxng_ok is False when every configured URL
@@ -152,12 +152,11 @@ def fetch_news(ticker: str) -> tuple[list[dict], bool]:
     instance's engines were rate-limited/CAPTCHA-suspended. A genuine empty
     result set (engines responded, nothing found) returns ([], True).
     """
-    # Deliberately excludes company_name: combined with time_range=month, an
-    # exact-or-near company name match narrows the candidate page set enough
-    # that the recency filter's intersection with it goes to zero on most
-    # engines. "TICKER stock" alone stays broad enough to survive the filter
-    # (confirmed empirically against the SearXNG instance — see conversation).
-    query = f"{ticker} stock"
+    # company_name disambiguates short/collision-prone tickers (e.g. "EL" alone
+    # matches El Pollo Loco, El Niño, EssilorLuxottica). Confirmed empirically
+    # that under categories=news this doesn't reintroduce the zero-result
+    # collapse seen earlier under categories=general — see conversation.
+    query = f"{ticker} {company_name} stock"
     for base_url in _searxng_urls():
         results = _search_one(query, base_url)
         if results is not None:
@@ -459,7 +458,10 @@ def main() -> None:
     for i, c in enumerate(candidates):
         try:
             info = yf.Ticker(c["ticker"]).info
-            c["name"] = info.get("shortName") or c["ticker"]
+            # longName preferred over shortName: confirmed via --debug-news that
+            # shortName is occasionally corrupted at the source (e.g. EL came back
+            # truncated mid-word) while longName was consistently clean.
+            c["name"] = info.get("longName") or info.get("shortName") or c["ticker"]
             if NEWS_DEBUG:
                 print(
                     f"    [name] {c['ticker']}: shortName={info.get('shortName')!r} "
@@ -469,7 +471,7 @@ def main() -> None:
             c["name"] = c["ticker"]
             if NEWS_DEBUG:
                 print(f"    [name] {c['ticker']}: lookup failed — {type(e).__name__}: {e}")
-        c["news"], searxng_ok = fetch_news(c["ticker"])
+        c["news"], searxng_ok = fetch_news(c["ticker"], c["name"])
         if not searxng_ok:
             searxng_failures += 1
         print(f"  {c['ticker']}: {c['name']} — {len(c['news'])} articles")
