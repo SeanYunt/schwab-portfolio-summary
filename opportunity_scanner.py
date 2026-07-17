@@ -71,7 +71,9 @@ LARGE_CAP_UNIVERSE = [
 MIN_MARKET_CAP = 10e9       # $10B floor — filters micro/small-cap outliers
 DIP_THRESHOLD_PCT = 10.0    # % below 52-week high to qualify
 MAX_CANDIDATES = 15         # caps candidates sent to Claude to control cost/latency
-NEWS_ARTICLES_PER_TICKER = 5
+NEWS_ARTICLES_PER_TICKER = 10  # raised from 5 — a bare "TICKER stock" query returns a mix of
+                                # boilerplate and substantive articles; the decision-relevant
+                                # ones (e.g. a lawsuit notice) can rank as low as #7-9 of 10
 NEWS_FETCH_DELAY_S = 3.0    # pause between SearXNG queries — rapid-fire queries get engines rate-limit/CAPTCHA suspended
 
 SEARXNG_TIMEOUT = 15
@@ -97,6 +99,10 @@ def _search_one(query: str, base_url: str) -> list[dict] | None:
         "format": "json",
         "time_range": "month",
         "language": "en",
+        "categories": "news",  # default (general) category returns quote/overview pages,
+                                # not news articles — confirmed empirically: general search
+                                # returned 1 genuine news item in 10 results (undated), news
+                                # category returned 9 genuine news items in 9 (see conversation)
     })
     url = f"{base_url}/search?{params}"
     req = Request(url, headers=_REQUEST_HEADERS)
