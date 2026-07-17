@@ -138,7 +138,7 @@ def _search_one(query: str, base_url: str) -> list[dict] | None:
     return results
 
 
-def fetch_news(ticker: str, company_name: str) -> tuple[list[dict], bool]:
+def fetch_news(ticker: str) -> tuple[list[dict], bool]:
     """Fetch recent news articles for a ticker via SearXNG with URL fallback.
 
     Returns (articles, searxng_ok). searxng_ok is False when every configured URL
@@ -146,7 +146,12 @@ def fetch_news(ticker: str, company_name: str) -> tuple[list[dict], bool]:
     instance's engines were rate-limited/CAPTCHA-suspended. A genuine empty
     result set (engines responded, nothing found) returns ([], True).
     """
-    query = f'"{company_name}" {ticker} stock'
+    # Deliberately excludes company_name: combined with time_range=month, an
+    # exact-or-near company name match narrows the candidate page set enough
+    # that the recency filter's intersection with it goes to zero on most
+    # engines. "TICKER stock" alone stays broad enough to survive the filter
+    # (confirmed empirically against the SearXNG instance — see conversation).
+    query = f"{ticker} stock"
     for base_url in _searxng_urls():
         results = _search_one(query, base_url)
         if results is not None:
@@ -450,7 +455,7 @@ def main() -> None:
             c["name"] = yf.Ticker(c["ticker"]).info.get("shortName") or c["ticker"]
         except Exception:
             c["name"] = c["ticker"]
-        c["news"], searxng_ok = fetch_news(c["ticker"], c["name"])
+        c["news"], searxng_ok = fetch_news(c["ticker"])
         if not searxng_ok:
             searxng_failures += 1
         print(f"  {c['ticker']}: {c['name']} — {len(c['news'])} articles")
