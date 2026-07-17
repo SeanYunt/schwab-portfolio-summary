@@ -189,7 +189,7 @@ def _build_analysis_prompt(candidates: list[dict]) -> str:
 
         dip = c["pct_from_high"]
         if dip <= -35:
-            tier = "TIER 3 (>35% dip — high skepticism required; default to UNCLEAR unless evidence is strong)"
+            tier = "TIER 3 (>35% dip — high skepticism; weigh the evidence and commit to a conviction-weighted verdict)"
         elif dip <= -20:
             tier = "TIER 2 (20–35% dip — elevated scrutiny; macro alone is insufficient)"
         else:
@@ -202,27 +202,33 @@ def _build_analysis_prompt(candidates: list[dict]) -> str:
             f"Recent news:\n{news_lines}"
         )
 
-    return f"""You are a skeptical value-oriented equity analyst screening large-cap stocks for genuine buying opportunities. Your job is to protect capital first, find opportunities second.
+    return f"""You are a skeptical value-oriented equity analyst screening large-cap stocks for genuine buying opportunities. Your job is to protect capital first, find opportunities second — but a refusal to judge is not protection. Every stock gets a directional verdict with a conviction level; uncertainty is expressed through conviction, not by defaulting to UNCLEAR.
 
 Each stock is labeled with a dip magnitude tier. Apply the corresponding standard of evidence:
 
 TIER 1 (10–20% dip): Standard screening. A credible temporary catalyst qualifies.
 TIER 2 (20–35% dip): Elevated scrutiny. You must identify a specific, named catalyst — not general macro sentiment. A broad "risk-off selloff" does not qualify. The 52-week high may have been inflated; cheap-vs-the-high is not the same as cheap.
-TIER 3 (>35% dip): High skepticism. A drawdown this deep usually means the market knows something that hasn't fully surfaced in the news. Default to UNCLEAR unless you have strong, specific positive evidence. Absence of bad news is NOT evidence of recoverability at this magnitude.
+TIER 3 (>35% dip): High skepticism. A drawdown this deep often means the market knows something that hasn't fully surfaced in the news, and absence of bad news is NOT evidence of recoverability. But do not default to UNCLEAR: weigh the available evidence and commit to a conviction-weighted verdict. If the evidence leans toward a temporary cause, RECOVERABLE — LOW CONVICTION is a legitimate call; if it leans toward lasting damage, use LEANS STRUCTURAL.
 
-VERDICT DEFINITIONS:
+VERDICT DEFINITIONS (five valid verdicts: RECOVERABLE, RECOVERABLE — LOW CONVICTION, UNCLEAR, LEANS STRUCTURAL, STRUCTURAL):
 
-RECOVERABLE — a specific, identifiable, temporary disruption with a clear resolution mechanism:
+RECOVERABLE — a specific, identifiable, temporary disruption with a plausible resolution mechanism. Qualifying catalysts include:
   - Named labor strike or work stoppage with resolution path
   - One bad quarter from a specific, non-recurring cost item (name it)
   - Named weather, logistics, or supply-chain event with known end date
   - Specific regulatory uncertainty with a known decision timeline
   - Input cost pressure tied to a commodity with clear mean-reversion history
-  DO NOT use this verdict for: broad macro selloffs, sector rotation, "sentiment," valuation compression, or rate fears — these are not temporary catalysts with predictable resolution.
+  - Guidance reset or one quarter of soft bookings with a named driver
+  - Capped, quantifiable litigation exposure (not open-ended)
+  - Temporary margin compression from a defined investment cycle (e.g., elevated capex with a stated timeline)
+  - Analyst or market overreaction to a single data point, contradicted by other fundamentals
+  - Forced or technical selling (index rebalance, large holder exit) distinct from fundamental deterioration
+  DO NOT use this verdict for: vague "sentiment," sector rotation, or valuation compression with no named cause. Macro-driven dips are governed by the MACRO RULE below.
+  State conviction as HIGH, MEDIUM, or LOW. RECOVERABLE — LOW CONVICTION means the evidence favors recovery but is incomplete — a directional lean, not a confident call.
 
-UNCLEAR — evidence is insufficient, contradictory, or the dip magnitude exceeds what the news explains:
-  This is a WARNING verdict, not a soft buy signal. It means: do not act until more information is available.
-  Use UNCLEAR when: the dip is macro-attributed but macro headwinds may persist; the news explains only part of the drawdown; or the stock is TIER 3 without strong positive evidence.
+UNCLEAR — reserve this for genuinely 50/50 cases: the evidence for recovery and for lasting damage is roughly balanced, or there is essentially no evidence either way. "Not 100% sure" is NOT grounds for UNCLEAR — every verdict carries uncertainty, and that belongs in the CONVICTION field. This remains a warning verdict: do not act until more information is available.
+
+LEANS STRUCTURAL — the evidence points more toward lasting damage than recovery, but the case is not yet conclusive. Use this instead of UNCLEAR when you can articulate a specific structural concern that outweighs the recovery case.
 
 STRUCTURAL — lasting damage that changes the fundamental thesis:
   - Demand erosion or secular volume decline
@@ -232,20 +238,22 @@ STRUCTURAL — lasting damage that changes the fundamental thesis:
   - Product obsolescence or technology displacement
   - Regulatory action directly threatening the core business model
 
-MACRO RULE: "Broad market selloff" or "macro risk-off" is only a valid RECOVERABLE catalyst if you can name: (1) the specific macro event, (2) why it will reverse within your stated timeframe, and (3) why this stock specifically recovers when it does. If you cannot do all three, the verdict is UNCLEAR.
+MACRO RULE: For a dip attributed to a broad market selloff or macro risk-off, evaluate three conditions: (1) you can name the specific macro event, (2) you can explain why it should reverse within your stated timeframe, (3) you can explain why this stock specifically recovers when it does. State how many of the three you can support, and set the verdict and conviction accordingly: all three supports RECOVERABLE up to HIGH conviction; two supports RECOVERABLE at MEDIUM or LOW; one supports at most RECOVERABLE — LOW CONVICTION or UNCLEAR; none means UNCLEAR or LEANS STRUCTURAL.
 
-Output format:
+NO-FABRICATION RULE: Never introduce a specific number — price, market cap, share count, revenue, margin, or any other financial metric — that is not present in the input data below. If a missing number would materially affect your verdict, name it under MISSING_INFO. Do not estimate it, and do not recall it from training data.
+
+Output format. Every verdict includes a CONVICTION line (HIGH / MEDIUM / LOW) so results can be sorted by confidence — for UNCLEAR and structural verdicts, conviction means confidence in that verdict itself.
 
 For RECOVERABLE stocks:
 ---
 TICKER: {{ticker}}
-VERDICT: RECOVERABLE
+VERDICT: RECOVERABLE [or RECOVERABLE — LOW CONVICTION]
 TIER: [1 / 2 / 3]
+CONVICTION: [HIGH / MEDIUM / LOW — one sentence on what sets it at this level]
 CATALYST: [one sentence — the specific named event driving the dip]
 RECOVERY_MECHANISM: [what specifically changes to restore price, and what triggers that change]
 RATIONALE: [one paragraph — why the disruption is temporary and bounded]
 TIMEFRAME: [realistic window with justification — do not default to "1–2 quarters" without reasoning]
-CONVICTION: [HIGH or MEDIUM — and one sentence explaining why not lower]
 ---
 
 For UNCLEAR stocks:
@@ -253,15 +261,22 @@ For UNCLEAR stocks:
 TICKER: {{ticker}}
 VERDICT: UNCLEAR — DO NOT ACT
 TIER: [1 / 2 / 3]
+CONVICTION: [HIGH / MEDIUM / LOW — how confident you are that this is genuinely undecidable rather than a lean you haven't committed to]
 RISK: [what specifically is unknown, contradictory, or unexplained by the news]
-MISSING_INFO: [what data or event would resolve the uncertainty]
+MISSING_INFO: [what data or event would resolve the uncertainty — including any number excluded under the NO-FABRICATION RULE]
 REVISIT: [what to watch — earnings date, regulatory decision, macro indicator]
 ---
 
-For STRUCTURAL cases, one line:
-TICKER: {{ticker}} — STRUCTURAL: [one-sentence reason]
+For LEANS STRUCTURAL and STRUCTURAL stocks:
+---
+TICKER: {{ticker}}
+VERDICT: [LEANS STRUCTURAL / STRUCTURAL]
+TIER: [1 / 2 / 3]
+CONVICTION: [HIGH / MEDIUM / LOW]
+REASON: [one or two sentences — the specific lasting damage; for LEANS STRUCTURAL, also what evidence would flip the call]
+---
 
-If none qualify as recoverable, say so explicitly. Make a call — do not hedge every sentence.
+If none qualify as recoverable, say so explicitly. Make a call — do not hedge every sentence, and do not let UNCLEAR absorb every hard case.
 
 --- STOCKS TO ANALYZE ---
 
@@ -272,11 +287,12 @@ def analyze_candidates(candidates: list[dict]) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     print("Requesting Claude analysis...")
     message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=6000,
+        model="claude-opus-4-8",
+        max_tokens=16000,
+        thinking={"type": "adaptive"},
         messages=[{"role": "user", "content": _build_analysis_prompt(candidates)}],
     )
-    return message.content[0].text
+    return next(b.text for b in message.content if b.type == "text")
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +319,16 @@ def _format_body(candidates: list[dict], analysis: str, spy_pct: float, threshol
         f"CLAUDE'S ASSESSMENT\n"
         f"{'—' * 52}\n"
         f"{analysis}\n"
+        f"\n"
+        f"{'—' * 52}\n"
+        f"VERDICT LEGEND\n"
+        f"{'—' * 52}\n"
+        f"RECOVERABLE — specific, temporary disruption with a plausible resolution mechanism.\n"
+        f"RECOVERABLE — LOW CONVICTION — evidence favors recovery but is incomplete; a directional lean, not a confident call.\n"
+        f"UNCLEAR — genuinely 50/50: evidence for recovery and lasting damage is balanced, or there is no evidence either way. Do not act.\n"
+        f"LEANS STRUCTURAL — evidence points more toward lasting damage than recovery, but the case is not conclusive.\n"
+        f"STRUCTURAL — lasting damage to the fundamental thesis (demand erosion, share loss, governance, balance sheet, obsolescence).\n"
+        f"CONVICTION — HIGH/MEDIUM/LOW confidence in the verdict itself; for UNCLEAR it means confidence the case is truly undecidable.\n"
         f"\n"
         f"Generated {datetime.now().strftime('%H:%M')} | opportunity_scanner.py\n"
     )
