@@ -20,6 +20,7 @@ SEARXNG_URL and/or SEARXNG_INTERNAL_URL in .env to point at your instance.
 import json
 import os
 import sys
+import time
 import smtplib
 import argparse
 from datetime import datetime
@@ -71,9 +72,12 @@ MIN_MARKET_CAP = 10e9       # $10B floor — filters micro/small-cap outliers
 DIP_THRESHOLD_PCT = 10.0    # % below 52-week high to qualify
 MAX_CANDIDATES = 15         # caps candidates sent to Claude to control cost/latency
 NEWS_ARTICLES_PER_TICKER = 5
+NEWS_FETCH_DELAY_S = 3.0    # pause between SearXNG queries — rapid-fire queries get engines rate-limit/CAPTCHA suspended
 
 SEARXNG_TIMEOUT = 15
 _REQUEST_HEADERS = {"User-Agent": "OpportunityScanner/1.0"}
+
+NEWS_DEBUG = False  # set by --debug-news; prints per-request SearXNG diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -94,19 +98,53 @@ def _search_one(query: str, base_url: str) -> list[dict] | None:
         "time_range": "month",
         "language": "en",
     })
-    req = Request(f"{base_url}/search?{params}", headers=_REQUEST_HEADERS)
+    url = f"{base_url}/search?{params}"
+    req = Request(url, headers=_REQUEST_HEADERS)
     try:
         resp = urlopen(req, timeout=SEARXNG_TIMEOUT)
-        return json.loads(resp.read()).get("results", [])
-    except (URLError, HTTPError, json.JSONDecodeError, OSError):
+        body = resp.read()
+    except HTTPError as e:
+        if NEWS_DEBUG:
+            print(f"    [news] GET {url}")
+            print(f"    [news] HTTP {e.code} {e.reason} | body: {e.read()[:300]!r}")
         return None
+    except (URLError, OSError) as e:
+        if NEWS_DEBUG:
+            print(f"    [news] GET {url}")
+            print(f"    [news] {type(e).__name__}: {e}")
+        return None
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as e:
+        if NEWS_DEBUG:
+            print(f"    [news] GET {url}")
+            print(f"    [news] JSONDecodeError: {e} | body: {body[:300]!r}")
+        return None
+    results = data.get("results", [])
+    unresponsive = data.get("unresponsive_engines", [])
+    if NEWS_DEBUG:
+        print(f"    [news] GET {url}")
+        print(
+            f"    [news] HTTP {resp.status} | {len(results)} results | "
+            f"unresponsive_engines={unresponsive}"
+        )
+        if not results:
+            print(f"    [news] empty result set; raw body (first 600 bytes): {body[:600]!r}")
+    if not results and unresponsive:
+        # Zero results with failed engines means the engines were rate-limited or
+        # CAPTCHA-suspended, not that no news exists — treat as a failed fetch so
+        # the caller falls back / warns instead of silently reporting no news.
+        return None
+    return results
 
 
 def fetch_news(ticker: str, company_name: str) -> tuple[list[dict], bool]:
     """Fetch recent news articles for a ticker via SearXNG with URL fallback.
 
-    Returns (articles, searxng_reachable). searxng_reachable is False only when
-    every configured URL fails with a connection error (not merely empty results).
+    Returns (articles, searxng_ok). searxng_ok is False when every configured URL
+    fails — either a connection error, or an empty result set where all of the
+    instance's engines were rate-limited/CAPTCHA-suspended. A genuine empty
+    result set (engines responded, nothing found) returns ([], True).
     """
     query = f'"{company_name}" {ticker} stock'
     for base_url in _searxng_urls():
@@ -379,7 +417,16 @@ def main() -> None:
         action="store_true",
         help="Print output to stdout instead of sending email",
     )
+    parser.add_argument(
+        "--debug-news",
+        action="store_true",
+        help="Print per-request SearXNG diagnostics (URL, HTTP status, raw response on empty/error)",
+    )
     args = parser.parse_args()
+
+    if args.debug_news:
+        global NEWS_DEBUG
+        NEWS_DEBUG = True
 
     # Conditional market trigger
     spy_pct = market_change_today()
@@ -398,17 +445,24 @@ def main() -> None:
     # Enrich with company name and news
     print("Fetching company names and news...")
     searxng_failures = 0
-    for c in candidates:
+    for i, c in enumerate(candidates):
         try:
             c["name"] = yf.Ticker(c["ticker"]).info.get("shortName") or c["ticker"]
         except Exception:
             c["name"] = c["ticker"]
-        c["news"], reachable = fetch_news(c["ticker"], c["name"])
-        if not reachable:
+        c["news"], searxng_ok = fetch_news(c["ticker"], c["name"])
+        if not searxng_ok:
             searxng_failures += 1
         print(f"  {c['ticker']}: {c['name']} — {len(c['news'])} articles")
+        if i < len(candidates) - 1:
+            time.sleep(NEWS_FETCH_DELAY_S)
     if searxng_failures:
-        print(f"  WARNING: SearXNG unreachable for {searxng_failures}/{len(candidates)} ticker(s) — Claude will analyze without news context")
+        print(f"  WARNING: SearXNG fetch failed for {searxng_failures}/{len(candidates)} ticker(s) (unreachable, or all engines rate-limited/suspended) — Claude will analyze without news context")
+
+    total_articles = sum(len(c["news"]) for c in candidates)
+    print(f"News fetched: {total_articles} articles across {len(candidates)} candidates")
+    if total_articles == 0:
+        print("  WARNING: zero news articles for ALL candidates — SearXNG is returning empty results; re-run with --debug-news to see raw responses")
 
     # Claude assessment
     analysis = analyze_candidates(candidates)
