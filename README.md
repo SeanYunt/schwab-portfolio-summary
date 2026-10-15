@@ -179,3 +179,21 @@ schwab-portfolio-summary/
 - An [Anthropic API key](https://console.anthropic.com)
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) configured
 - Docker (optional, for messages-to-midnight / SearXNG)
+
+## Day P&L sanity check
+
+Schwab occasionally returns garbage `currentDayProfitLoss` values (Oct 14/15 2026:
+-$90K on a $194K portfolio, every position ~-50%, while total value was normal).
+`pl_guard.py` validates the figure before it reaches the email or the LLM:
+
+- Rejected if |day P&L| exceeds 15% of total value, or if a third or more of
+  positions (min 3) show a ±25% day move.
+- When rejected: the subject shows `Day: UNVERIFIED (est. $…)` using the change
+  in total value since the previous run, per-position moves are withheld from
+  the prompt, the model is told not to explain any price moves, and a warning
+  banner with the rejected figure is added to the top of the email.
+- Every run saves the raw Schwab response (account identifiers redacted) to
+  `snapshots/raw/` (newest 30 kept) and the daily total to
+  `snapshots/total_value_history.json`.
+
+Tests: `python -m unittest test_pl_guard -v`

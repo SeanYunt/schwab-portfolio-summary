@@ -6,6 +6,7 @@ services:
     env_file: .env
     volumes:
       - ./token.json:/app/token.json
+      - ./snapshots:/app/snapshots
       - ${M2M_PATH:-/home/sean/messages-to-midnight}:/opt/messages-to-midnight
     environment:
       SCAN_SCRIPT_PATH: /opt/messages-to-midnight/scripts/scan.py

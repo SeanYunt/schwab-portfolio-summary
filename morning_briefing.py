@@ -10,7 +10,7 @@ import subprocess
 import sys
 import smtplib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from email.mime.text import MIMEText
 from pathlib import Path
 from dotenv import load_dotenv
@@ -19,7 +19,12 @@ import yaml
 import yfinance as yf
 from authlib.integrations.base_client.errors import OAuthError
 
-from portfolio_summary import get_schwab_client, fetch_portfolio, fetch_earnings_calendar, EARNINGS_LOOKAHEAD_DAYS
+import pl_guard
+from portfolio_summary import (
+    get_schwab_client, fetch_accounts_raw, parse_accounts,
+    fetch_earnings_calendar, EARNINGS_LOOKAHEAD_DAYS,
+    SNAPSHOT_DIR, HISTORY_PATH,
+)
 
 load_dotenv()
 
@@ -251,18 +256,23 @@ def run_news_scan() -> str:
 # Combined prompt
 # ---------------------------------------------------------------------------
 
-def build_briefing_prompt(portfolio: list, news: str, today: date, earnings: dict | None = None) -> str:
+def build_briefing_prompt(
+    portfolio: list,
+    news: str,
+    today: date,
+    earnings: dict | None = None,
+    assessment: "pl_guard.DayPLAssessment | None" = None,
+) -> str:
     total_value = sum(a["total_value"] for a in portfolio)
-    total_day_pl = sum(a["day_pl"] for a in portfolio)
+    if assessment is None:
+        assessment = pl_guard.assess_day_pl(portfolio)
 
-    # Build holdings summary for cross-reference
-    holdings = []
-    for acct in portfolio:
-        for pos in acct["positions"]:
-            holdings.append(
-                f"  {pos['symbol']}: ${pos['market_value']:,.2f} "
-                f"({pos['day_pl_pct']:+.2f}% today)"
-            )
+    # Holdings + day P&L. When the broker's day figures fail validation,
+    # pl_guard withholds every per-position move so the model has no bogus
+    # "movers" to explain.
+    positions = [pos for acct in portfolio for pos in acct["positions"]]
+    snapshot = pl_guard.snapshot_lines(positions, total_value, assessment)
+    notice = pl_guard.integrity_notice(assessment)
 
     # Normalize news section
     if "NO_NEW_RESULTS" in news:
@@ -276,10 +286,7 @@ def build_briefing_prompt(portfolio: list, news: str, today: date, earnings: dic
         f"Today is {today.strftime('%A, %B %d, %Y')}.",
         "",
         "=== PORTFOLIO SNAPSHOT ===",
-        f"Total value: ${total_value:,.2f} | Day P&L: ${total_day_pl:+,.2f}",
-        "",
-        "Holdings:",
-        *holdings,
+        *snapshot,
         "",
         "=== NEWS SIGNALS ===",
         news_section,
@@ -291,6 +298,7 @@ def build_briefing_prompt(portfolio: list, news: str, today: date, earnings: dic
             else ["  None within the lookahead window."]
         ),
         "",
+        *([notice] if notice else []),
         "=== YOUR TASK ===",
         "Write a unified morning briefing in flowing prose (no bullet points). Include:",
         "",
@@ -332,9 +340,9 @@ def build_briefing_prompt(portfolio: list, news: str, today: date, earnings: dic
 # Claude
 # ---------------------------------------------------------------------------
 
-def generate_briefing(portfolio: list, news: str, today: date, earnings: dict | None = None) -> str:
+def generate_briefing(portfolio: list, news: str, today: date, earnings: dict | None = None, assessment=None) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    prompt = build_briefing_prompt(portfolio, news, today, earnings)
+    prompt = build_briefing_prompt(portfolio, news, today, earnings, assessment)
 
     message = client.messages.create(
         model="claude-opus-4-6",
@@ -344,7 +352,7 @@ def generate_briefing(portfolio: list, news: str, today: date, earnings: dict | 
     return message.content[0].text
 
 
-def generate_briefing_local(portfolio: list, news: str, today: date, earnings: dict | None = None) -> str | None:
+def generate_briefing_local(portfolio: list, news: str, today: date, earnings: dict | None = None, assessment=None) -> str | None:
     """Run the same briefing prompt against a local Ollama instance. Returns None if not configured."""
     url = os.environ.get("LOCAL_LLM_URL", "").strip()
     if not url:
@@ -353,7 +361,7 @@ def generate_briefing_local(portfolio: list, news: str, today: date, earnings: d
         from openai import OpenAI
         model = os.environ.get("LOCAL_LLM_MODEL", "llama3.1:8b").strip()
         client = OpenAI(base_url=url, api_key="ollama")
-        prompt = build_briefing_prompt(portfolio, news, today, earnings)
+        prompt = build_briefing_prompt(portfolio, news, today, earnings, assessment)
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -397,7 +405,7 @@ def main():
     print("Fetching portfolio...")
     try:
         schwab_client = get_schwab_client()
-        portfolio = fetch_portfolio(schwab_client)
+        raw_accounts = fetch_accounts_raw(schwab_client)
     except OAuthError:
         subject = f"Morning Briefing FAILED | {today.strftime('%b %d')} | Re-auth required"
         body = (
@@ -410,9 +418,21 @@ def main():
         send_email(subject, body)
         print("OAuth token expired — warning email sent.")
         return
+
+    # Keep the raw broker response so a bad payload can be diagnosed later.
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    pl_guard.save_raw_snapshot(SNAPSHOT_DIR / "raw", stamp, raw_accounts)
+
+    portfolio = parse_accounts(raw_accounts)
     total_value = sum(a["total_value"] for a in portfolio)
-    total_day_pl = sum(a["day_pl"] for a in portfolio)
-    print(f"  ${total_value:,.2f} | Day P&L: ${total_day_pl:+,.2f}")
+    assessment = pl_guard.assess_day_pl(portfolio, pl_guard.load_prev_total(HISTORY_PATH, today))
+    pl_guard.record_total(HISTORY_PATH, today, total_value)
+
+    print(f"  ${total_value:,.2f} | Day P&L (reported): ${assessment.reported:+,.2f}")
+    if not assessment.verified:
+        print(f"  WARNING: day P&L failed sanity check — {'; '.join(assessment.reasons)}")
+        if assessment.value is not None:
+            print(f"  Using estimate from change in total value: ${assessment.value:+,.2f}")
 
     print("Fetching earnings calendar...")
     earnings = fetch_earnings_calendar(portfolio)
@@ -436,8 +456,8 @@ def main():
 
     print("Generating briefing (Claude + local LLM in parallel)...")
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_claude = executor.submit(generate_briefing, portfolio, news, today, earnings)
-        future_local = executor.submit(generate_briefing_local, portfolio, news, today, earnings)
+        future_claude = executor.submit(generate_briefing, portfolio, news, today, earnings, assessment)
+        future_local = executor.submit(generate_briefing_local, portfolio, news, today, earnings, assessment)
         claude_text = future_claude.result()
         local_text = future_local.result()
 
@@ -451,9 +471,11 @@ def main():
     else:
         body = claude_text
 
+    body = pl_guard.email_banner(assessment) + body
+
     subject = (
         f"Morning Briefing | {today.strftime('%b %d')} | "
-        f"${total_value:,.0f} | Day: ${total_day_pl:+,.0f}"
+        f"${total_value:,.0f} | {pl_guard.subject_day_label(assessment)}"
     )
     send_email(subject, body)
 
