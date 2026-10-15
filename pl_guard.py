@@ -207,8 +207,10 @@ def save_raw_snapshot(directory: Path, stamp: str, payload, keep: int = 30) -> P
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"schwab_raw_{stamp}.json"
         path.write_text(json.dumps(_redact(copy.deepcopy(payload)), indent=2))
+        # World-readable on purpose: the container writes as root, and the
+        # host user must be able to read it. Account identifiers are redacted.
         try:
-            path.chmod(0o600)
+            path.chmod(0o644)
         except OSError:
             pass
         for old in sorted(directory.glob("schwab_raw_*.json"))[:-keep]:

@@ -9,6 +9,8 @@ Run: python -m unittest test_pl_guard -v
 import contextlib
 import io
 import json
+import stat
+import sys
 import tempfile
 import unittest
 from datetime import date
@@ -233,6 +235,14 @@ class RawSnapshotTests(unittest.TestCase):
         self.assertNotIn("ABCDEF", text)
         self.assertIn("5678", text)  # last four kept, like the rest of the app
         self.assertIn("-26400.0", text)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX file modes only")
+    def test_snapshot_is_readable_by_the_host_user(self):
+        # The container writes as root; a 0600 file is unreadable to the
+        # host user who needs it for forensics (seen on T3600, Oct 15 2026).
+        path = pl_guard.save_raw_snapshot(self.dir, "20261015T070300", [{"n": 1}])
+        mode = stat.S_IMODE(path.stat().st_mode)
+        self.assertTrue(mode & stat.S_IROTH, f"mode is {oct(mode)}")
 
     def test_prunes_to_newest_n_files(self):
         for i in range(6):
