@@ -425,13 +425,18 @@ def main():
 
     portfolio = parse_accounts(raw_accounts)
     total_value = sum(a["total_value"] for a in portfolio)
-    assessment = pl_guard.assess_day_pl(portfolio, pl_guard.load_prev_total(HISTORY_PATH, today))
+    assessment, portfolio = pl_guard.assess_with_reconstruction(
+        portfolio, pl_guard.load_prev_total(HISTORY_PATH, today)
+    )
     pl_guard.record_total(HISTORY_PATH, today, total_value)
 
     print(f"  ${total_value:,.2f} | Day P&L (reported): ${assessment.reported:+,.2f}")
     if not assessment.verified:
         print(f"  WARNING: day P&L failed sanity check — {'; '.join(assessment.reasons)}")
-        if assessment.value is not None:
+        if assessment.reconstructed:
+            skipped = f" (not reconstructed: {', '.join(assessment.excluded)})" if assessment.excluded else ""
+            print(f"  Reconstructed from per-share price changes: ${assessment.value:+,.2f}{skipped}")
+        elif assessment.value is not None:
             print(f"  Using estimate from change in total value: ${assessment.value:+,.2f}")
 
     print("Fetching earnings calendar...")

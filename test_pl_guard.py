@@ -185,6 +185,171 @@ class PromptTests(unittest.TestCase):
         self.assertIn("price move", notice)
 
 
+# ---------------------------------------------------------------------------
+# Reconstruction from per-share netChange (added after the Oct 15 forensics)
+# ---------------------------------------------------------------------------
+
+def rpos(symbol, asset_type, qty, price, pl, net_change=None, day_cost=0.0, avg=None, short=0.0):
+    """Position carrying the fields the reconstruction needs (real Oct 15 values)."""
+    mv = round(qty * price, 2)
+    return {
+        "symbol": symbol, "asset_type": asset_type, "quantity": qty,
+        "short_quantity": short, "market_value": mv,
+        "day_pl": pl, "day_pl_pct": pl / (mv - pl) * 100 if mv - pl else 0.0,
+        "net_change": net_change, "day_cost": day_cost, "average_price": avg,
+    }
+
+
+def corrupt_oct15_positions():
+    """Subset of the real broker payload: day_pl == qty*netChange - currentDayCost."""
+    return [
+        rpos("SWPPX", "MUTUAL_FUND", 660.15, 19.95, -145.23, -0.22, 10127.05, 15.34),
+        rpos("F", "EQUITY", 200.0, 12.1677, -2409.66, 23.54 / 200.0, 2433.20, 12.166),
+        rpos("XOM", "EQUITY", 66.27, 175.23, -5303.20, -117.96 / 66.27, 5185.24, 78.24),
+        rpos("GLD", "COLLECTIVE_INVESTMENT", 25.0, 381.07, -8592.88, None, 8719.88, 348.795),
+        rpos("CPER", "COLLECTIVE_INVESTMENT", 300.0, 39.321, -9842.05, None, 9740.35, 32.4678),
+    ]
+
+
+# qty*netChange for the equities/fund, and (reported + currentDayCost) for the ETFs
+EXPECTED_RECONSTRUCTED_TOTAL = -145.23 + 23.54 - 117.96 + 127.00 - 101.70   # -214.35
+
+
+class ReconstructionTests(unittest.TestCase):
+    def setUp(self):
+        self.portfolio = portfolio_of(40000.0, corrupt_oct15_positions())
+
+    def _by_symbol(self, portfolio):
+        return {p["symbol"]: p for p in portfolio[0]["positions"]}
+
+    def test_equities_use_quantity_times_net_change(self):
+        _, portfolio = pl_guard.assess_with_reconstruction(self.portfolio)
+        by = self._by_symbol(portfolio)
+        self.assertAlmostEqual(by["F"]["day_pl"], 23.54, delta=0.01)
+        self.assertAlmostEqual(by["XOM"]["day_pl"], -117.96, delta=0.01)
+
+    def test_mutual_fund_reconstruction_matches_broker_figure(self):
+        _, portfolio = pl_guard.assess_with_reconstruction(self.portfolio)
+        self.assertAlmostEqual(self._by_symbol(portfolio)["SWPPX"]["day_pl"], -145.23, delta=0.05)
+
+    def test_etf_without_net_change_uses_cost_basis_signature(self):
+        _, portfolio = pl_guard.assess_with_reconstruction(self.portfolio)
+        by = self._by_symbol(portfolio)
+        self.assertAlmostEqual(by["GLD"]["day_pl"], 127.00, delta=0.01)
+        self.assertAlmostEqual(by["CPER"]["day_pl"], -101.70, delta=0.01)
+
+    def test_reconstructed_percentages_are_plausible(self):
+        _, portfolio = pl_guard.assess_with_reconstruction(self.portfolio)
+        by = self._by_symbol(portfolio)
+        self.assertAlmostEqual(by["F"]["day_pl_pct"], 0.98, delta=0.01)
+        for p in by.values():
+            self.assertLess(abs(p["day_pl_pct"]), 5.0, p["symbol"])
+
+    def test_assessment_reports_reconstruction_and_keeps_rejected_figure(self):
+        assessment, _ = pl_guard.assess_with_reconstruction(self.portfolio)
+        self.assertFalse(assessment.verified)
+        self.assertTrue(assessment.reconstructed)
+        self.assertFalse(assessment.estimated)
+        self.assertAlmostEqual(assessment.value, EXPECTED_RECONSTRUCTED_TOTAL, delta=0.1)
+        self.assertAlmostEqual(assessment.reported, -26293.02, places=2)
+        self.assertEqual(assessment.excluded, [])
+
+    def test_reconstruction_preferred_over_previous_total_estimate(self):
+        assessment, _ = pl_guard.assess_with_reconstruction(self.portfolio, prev_total_value=45000.0)
+        self.assertTrue(assessment.reconstructed)
+        self.assertAlmostEqual(assessment.value, EXPECTED_RECONSTRUCTED_TOTAL, delta=0.1)
+
+    def test_trusted_broker_data_is_left_alone(self):
+        portfolio = portfolio_of(195651.41, healthy_positions(), day_pl=-458.65)
+        assessment, returned = pl_guard.assess_with_reconstruction(portfolio)
+        self.assertTrue(assessment.verified)
+        self.assertFalse(assessment.reconstructed)
+        self.assertIs(returned, portfolio)
+
+    def test_input_portfolio_is_not_mutated(self):
+        pl_guard.assess_with_reconstruction(self.portfolio)
+        self.assertEqual(self._by_symbol(self.portfolio)["F"]["day_pl"], -2409.66)
+
+    def test_etf_without_net_change_or_signature_is_not_reconstructed(self):
+        positions = corrupt_oct15_positions()
+        positions[3] = rpos("GLD", "COLLECTIVE_INVESTMENT", 25.0, 381.07, -8592.88, None, 0.0, 348.795)
+        # GLD is ~20% of position value: over the 5% coverage limit
+        assessment, _ = pl_guard.assess_with_reconstruction(portfolio_of(40000.0, positions))
+        self.assertFalse(assessment.reconstructed)
+        self.assertIsNone(assessment.value)
+
+    def test_small_uncoverable_position_is_excluded_but_not_fatal(self):
+        positions = corrupt_oct15_positions()
+        positions.append(rpos("ODD", "OPTION", 1.0, 100.0, -90.0, None, 0.0, None))
+        assessment, portfolio = pl_guard.assess_with_reconstruction(portfolio_of(40000.0, positions))
+        self.assertTrue(assessment.reconstructed)
+        self.assertEqual(assessment.excluded, ["ODD"])
+        odd = self._by_symbol(portfolio)["ODD"]
+        self.assertIsNone(odd["day_pl"])
+        self.assertIsNone(odd["day_pl_pct"])
+
+    def test_implausible_reconstruction_is_rejected_and_falls_back(self):
+        # netChange itself says -40% on every holding: don't launder that.
+        positions = [rpos(f"S{i}", "EQUITY", 100.0, 60.0, -3000.0, -40.0, 10000.0, 100.0)
+                     for i in range(5)]
+        portfolio = portfolio_of(30000.0, positions)
+        assessment, _ = pl_guard.assess_with_reconstruction(portfolio, prev_total_value=30500.0)
+        self.assertFalse(assessment.reconstructed)
+        self.assertTrue(assessment.estimated)
+        self.assertAlmostEqual(assessment.value, -500.0)
+
+    def test_short_positions_use_net_quantity(self):
+        positions = corrupt_oct15_positions()
+        positions.append(rpos("SHRT", "EQUITY", 0.0, 50.0, -400.0, 0.5, 600.0, 40.0, short=20.0))
+        positions[-1]["market_value"] = -1000.0
+        _, portfolio = pl_guard.assess_with_reconstruction(portfolio_of(40000.0, positions))
+        self.assertAlmostEqual(self._by_symbol(portfolio)["SHRT"]["day_pl"], -10.0)  # -20 sh * +0.50
+
+
+class ReconstructedOutputTests(unittest.TestCase):
+    def setUp(self):
+        portfolio = portfolio_of(40000.0, corrupt_oct15_positions())
+        self.assessment, self.portfolio = pl_guard.assess_with_reconstruction(portfolio)
+        self.positions = [p for a in self.portfolio for p in a["positions"]]
+
+    def test_subject_marks_figure_as_reconstructed(self):
+        label = pl_guard.subject_day_label(self.assessment)
+        self.assertIn("UNVERIFIED", label)
+        self.assertIn("reconstructed", label)
+        self.assertIn("-214", label)
+        self.assertNotIn("26,293", label)
+
+    def test_banner_shows_rejected_and_reconstructed_figures(self):
+        banner = pl_guard.email_banner(self.assessment)
+        self.assertIn("26,293.02", banner)
+        self.assertIn("-214", banner)
+        self.assertIn("reconstructed", banner.lower())
+
+    def test_prompt_uses_reconstructed_moves_and_hides_broker_figures(self):
+        snapshot = "\n".join(pl_guard.snapshot_lines(self.positions, 40000.0, self.assessment))
+        self.assertIn("RECONSTRUCTED", snapshot)
+        self.assertIn("F:", snapshot)
+        self.assertIn("+0.98% today", snapshot)
+        for bogus in ("26,293", "-47.4", "-49.7", "2,409"):
+            self.assertNotIn(bogus, snapshot)
+
+    def test_notice_explains_provenance_and_forbids_broker_figures(self):
+        notice = pl_guard.integrity_notice(self.assessment).lower()
+        self.assertIn("reconstructed", notice)
+        self.assertIn("do not", notice)
+        self.assertNotIn("26,293", notice)
+
+    def test_unreconstructed_positions_are_listed_without_a_move(self):
+        positions = corrupt_oct15_positions()
+        positions.append(rpos("ODD", "OPTION", 1.0, 100.0, -90.0, None, 0.0, None))
+        assessment, portfolio = pl_guard.assess_with_reconstruction(portfolio_of(40000.0, positions))
+        flat = [p for a in portfolio for p in a["positions"]]
+        snapshot = "\n".join(pl_guard.snapshot_lines(flat, 40000.0, assessment))
+        odd_line = [l for l in snapshot.splitlines() if l.strip().startswith("ODD")][0]
+        self.assertIn("unavailable", odd_line)
+        self.assertNotIn("% today", odd_line)
+
+
 class HistoryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

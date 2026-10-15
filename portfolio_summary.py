@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from dotenv import load_dotenv
 import pl_guard
+from schwab_parse import parse_accounts  # re-exported for morning_briefing
 import schwab
 import anthropic
 import yfinance as yf
@@ -50,38 +51,6 @@ def fetch_accounts_raw(client) -> list:
 def fetch_portfolio(client) -> list:
     """Fetch all accounts with positions and return a structured summary."""
     return parse_accounts(fetch_accounts_raw(client))
-
-
-def parse_accounts(accounts_data: list) -> list:
-    portfolio = []
-    for account in accounts_data:
-        acct = account.get("securitiesAccount", {})
-        account_type = acct.get("type", "Unknown")
-        account_id = acct.get("accountNumber", "")[-4:]  # last 4 digits only
-
-        positions = []
-        for pos in acct.get("positions", []):
-            instrument = pos.get("instrument", {})
-            positions.append({
-                "symbol": instrument.get("symbol", instrument.get("description", "Unknown")),
-                "asset_type": instrument.get("assetType", ""),
-                "quantity": pos.get("longQuantity", 0),
-                "market_value": pos.get("marketValue", 0),
-                "day_pl": pos.get("currentDayProfitLoss", 0),
-                "day_pl_pct": pos.get("currentDayProfitLossPercentage", 0),
-            })
-
-        balances = acct.get("currentBalances", {})
-        portfolio.append({
-            "account_type": account_type,
-            "account_id": f"...{account_id}",
-            "total_value": balances.get("liquidationValue", 0),
-            "cash": balances.get("cashBalance", 0),
-            "day_pl": sum(p["day_pl"] for p in positions),
-            "positions": positions,
-        })
-
-    return portfolio
 
 
 # ---------------------------------------------------------------------------
@@ -140,17 +109,23 @@ def build_prompt(
     total_value = sum(a["total_value"] for a in portfolio)
     if assessment is None:
         assessment = pl_guard.assess_day_pl(portfolio)
-    trusted = assessment.verified
+    trusted = assessment.verified or assessment.reconstructed
+
+    if assessment.verified:
+        pl_line = f"Today's gain/loss so far: ${assessment.value:+,.2f}"
+    elif assessment.reconstructed:
+        pl_line = (
+            f"Today's gain/loss so far: ${assessment.value:+,.2f} "
+            "(RECONSTRUCTED from per-share price changes; the broker's own figure was corrupt)"
+        )
+    else:
+        pl_line = "Today's gain/loss so far: UNAVAILABLE (broker figure failed validation)"
 
     lines = [
         f"Today is {today.strftime('%A, %B %d, %Y')}. US equity markets opened 30 minutes ago.",
         f"",
         f"Total portfolio value across all Schwab accounts: ${total_value:,.2f}",
-        (
-            f"Today's gain/loss so far: ${assessment.value:+,.2f}"
-            if trusted
-            else "Today's gain/loss so far: UNAVAILABLE (broker figure failed validation)"
-        ),
+        pl_line,
         f"",
         f"Account breakdown:",
     ]
@@ -162,7 +137,8 @@ def build_prompt(
             f"${acct['total_value']:,.2f}{acct_pl}"
         )
         for pos in sorted(acct["positions"], key=lambda p: p["market_value"], reverse=True)[:10]:
-            pos_pct = f" ({pos['day_pl_pct']:+.2f}% today)" if trusted else ""
+            has_move = trusted and pos.get("day_pl_pct") is not None
+            pos_pct = f" ({pos['day_pl_pct']:+.2f}% today)" if has_move else ""
             lines.append(f"    {pos['symbol']}: ${pos['market_value']:,.2f}{pos_pct}")
 
     notice = pl_guard.integrity_notice(assessment)
@@ -236,12 +212,16 @@ def main():
     portfolio = parse_accounts(raw_accounts)
 
     total_value = sum(a["total_value"] for a in portfolio)
-    assessment = pl_guard.assess_day_pl(portfolio, pl_guard.load_prev_total(HISTORY_PATH, today))
+    assessment, portfolio = pl_guard.assess_with_reconstruction(
+        portfolio, pl_guard.load_prev_total(HISTORY_PATH, today)
+    )
     pl_guard.record_total(HISTORY_PATH, today, total_value)
 
     print(f"Total value: ${total_value:,.2f} | Day P&L (reported): ${assessment.reported:+,.2f}")
     if not assessment.verified:
         print(f"WARNING: day P&L failed sanity check — {'; '.join(assessment.reasons)}")
+        if assessment.reconstructed:
+            print(f"Reconstructed from per-share price changes: ${assessment.value:+,.2f}")
 
     print("Fetching earnings calendar...")
     earnings = fetch_earnings_calendar(portfolio)

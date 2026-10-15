@@ -188,12 +188,20 @@ Schwab occasionally returns garbage `currentDayProfitLoss` values (Oct 14/15 202
 
 - Rejected if |day P&L| exceeds 15% of total value, or if a third or more of
   positions (min 3) show a ±25% day move.
-- When rejected: the subject shows `Day: UNVERIFIED (est. $…)` using the change
-  in total value since the previous run, per-position moves are withheld from
-  the prompt, the model is told not to explain any price moves, and a warning
-  banner with the rejected figure is added to the top of the email.
+- When rejected, day P&L is rebuilt from Schwab's per-share `netChange`
+  (`qty × netChange`; ETFs without `netChange` use `reported + currentDayCost`,
+  only when `currentDayCost` equals `qty × averagePrice`, the Schwab fault
+  signature). The subject shows `Day: UNVERIFIED (reconstructed $…)`, the
+  prompt gets the reconstructed moves labelled as such, and a warning banner
+  with the rejected figure is added to the top of the email. The rebuild is
+  itself sanity-checked and abandoned if more than 5% of position value can't
+  be covered.
+- If reconstruction isn't possible: the subject shows `Day: UNVERIFIED (est. $…)`
+  using the change in total value since the previous run (or just `UNVERIFIED`),
+  per-position moves are withheld, and the model is told not to explain any
+  price moves.
 - Every run saves the raw Schwab response (account identifiers redacted) to
   `snapshots/raw/` (newest 30 kept) and the daily total to
   `snapshots/total_value_history.json`.
 
-Tests: `python -m unittest test_pl_guard -v`
+Tests: `python -m unittest test_pl_guard test_schwab_parse -v`
