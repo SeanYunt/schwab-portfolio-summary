@@ -191,11 +191,14 @@ Schwab occasionally returns garbage `currentDayProfitLoss` values (Oct 14/15 202
 - When rejected, day P&L is rebuilt from Schwab's per-share `netChange`
   (`qty × netChange`; ETFs without `netChange` use `reported + currentDayCost`,
   only when `currentDayCost` equals `qty × averagePrice`, the Schwab fault
-  signature). The subject shows `Day: UNVERIFIED (reconstructed $…)`, the
-  prompt gets the reconstructed moves labelled as such, and a warning banner
-  with the rejected figure is added to the top of the email. The rebuild is
-  itself sanity-checked and abandoned if more than 5% of position value can't
-  be covered.
+  signature). The calculated figure is then used as the day P&L: the subject
+  shows `Day: $… (calculated)`, a one-line note at the top of the email says
+  how it was calculated, and the model is told to treat the moves as actual and
+  not to discuss data quality. Schwab's rejected figure appears only in the run
+  log. The rebuild is itself sanity-checked and abandoned (falling back to the
+  loud warning below) if more than 5% of position value can't be covered.
+  Since ~Oct 14 2026 this path runs daily: Schwab reports full cost basis as
+  `currentDayCost` for lots held before that date.
 - If reconstruction isn't possible: the subject shows `Day: UNVERIFIED (est. $…)`
   using the change in total value since the previous run (or just `UNVERIFIED`),
   per-position moves are withheld, and the model is told not to explain any

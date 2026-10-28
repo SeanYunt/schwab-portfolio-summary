@@ -178,40 +178,38 @@ def subject_day_label(a: DayPLAssessment) -> str:
     if a.verified:
         return f"Day: ${a.value:+,.0f}"
     if a.reconstructed:
-        return f"Day: UNVERIFIED (reconstructed ${a.value:+,.0f})"
+        return f"Day: ${a.value:+,.0f} (calculated)"
     if a.value is not None:
         return f"Day: UNVERIFIED (est. ${a.value:+,.0f})"
     return "Day: UNVERIFIED"
 
 
 def email_banner(a: DayPLAssessment) -> str:
-    """Human-facing warning placed above the briefing. Empty when data is fine."""
+    """Human-facing note placed above the briefing. Empty when data is fine."""
     if a.verified:
         return ""
+    if a.reconstructed:
+        note = (
+            f"Day P&L ${a.value:+,.2f} is calculated here as shares x each holding's "
+            "per-share price change (Schwab's own day P&L field is ignored while it is faulty)"
+        )
+        if a.excluded:
+            note += f"; no figure for {', '.join(a.excluded)}"
+        return note + ".\n\n"
     lines = [
         "!! DATA WARNING: DAY P&L NOT TRUSTED !!",
         f"Schwab reported a day P&L of ${a.reported:+,.2f} on a total value of "
         f"${a.total_value:,.2f}. That failed a sanity check ({'; '.join(a.reasons)}).",
     ]
-    if a.reconstructed:
+    if a.value is not None:
         lines.append(
-            f"Day P&L reconstructed from Schwab's per-share price changes: ${a.value:+,.2f}"
-            + (f" (not available for: {', '.join(a.excluded)})." if a.excluded else ".")
+            f"Change in total value since the previous run: ${a.value:+,.2f} "
+            "(includes any deposits/withdrawals)."
         )
-        lines.append(
-            "Per-position moves in the analysis below use the reconstructed figures. "
-            "Check Schwab directly before acting on any figure in this email."
-        )
-    else:
-        if a.value is not None:
-            lines.append(
-                f"Change in total value since the previous run: ${a.value:+,.2f} "
-                "(includes any deposits/withdrawals)."
-            )
-        lines.append(
-            "Per-position day moves were withheld from the analysis below. "
-            "Check Schwab directly before acting on any figure in this email."
-        )
+    lines.append(
+        "Per-position day moves were withheld from the analysis below. "
+        "Check Schwab directly before acting on any figure in this email."
+    )
     return "\n".join(lines) + "\n\n" + "=" * 60 + "\n\n"
 
 
@@ -231,9 +229,9 @@ def snapshot_lines(positions: list, total_value: float, a: DayPLAssessment) -> l
     if a.reconstructed:
         lines = [
             f"Total value: ${total_value:,.2f} | Day P&L: ${a.value:+,.2f} "
-            "(RECONSTRUCTED from per-share price changes; the broker's own figure was corrupt)",
+            "(calculated from shares x per-share price change)",
             "",
-            "Holdings (day moves RECONSTRUCTED):",
+            "Holdings:",
         ]
         for p in positions:
             if p.get("day_pl_pct") is None:
@@ -264,11 +262,11 @@ def integrity_notice(a: DayPLAssessment) -> str:
         return ""
     if a.reconstructed:
         return "\n".join([
-            "=== DATA INTEGRITY NOTICE (overrides the task below) ===",
-            "The broker's own day gain/loss fields were corrupt today and were discarded.",
-            "The day moves listed above were RECONSTRUCTED from per-share price-change data.",
-            "- Say once, briefly, that today's day figures were reconstructed because the",
-            "  broker's data was faulty.",
+            "=== DAY FIGURES (overrides the task below) ===",
+            "The day moves listed above are calculated from share counts and per-share",
+            "price changes. Treat them as today's actual moves.",
+            "- Do not comment on how the figures were derived or on data quality; a note",
+            "  above the email already covers that.",
             "- Use only the figures listed above. Do NOT cite, estimate or mention any other",
             "  day P&L figure or percentage.",
             "- Positions marked 'day move unavailable' have no move; do not describe one.",

@@ -335,7 +335,7 @@ def analyze_candidates(candidates: list[dict]) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     print("Requesting Claude analysis...")
     message = client.messages.create(
-        model="claude-opus-4-8",
+        model="claude-opus-5-5",
         max_tokens=16000,
         thinking={"type": "adaptive"},
         messages=[{"role": "user", "content": _build_analysis_prompt(candidates)}],

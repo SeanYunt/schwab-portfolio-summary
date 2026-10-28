@@ -116,7 +116,7 @@ def build_prompt(
     elif assessment.reconstructed:
         pl_line = (
             f"Today's gain/loss so far: ${assessment.value:+,.2f} "
-            "(RECONSTRUCTED from per-share price changes; the broker's own figure was corrupt)"
+            "(calculated from shares x per-share price change)"
         )
     else:
         pl_line = "Today's gain/loss so far: UNAVAILABLE (broker figure failed validation)"
