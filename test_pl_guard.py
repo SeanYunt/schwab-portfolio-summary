@@ -312,30 +312,43 @@ class ReconstructedOutputTests(unittest.TestCase):
         self.assessment, self.portfolio = pl_guard.assess_with_reconstruction(portfolio)
         self.positions = [p for a in self.portfolio for p in a["positions"]]
 
-    def test_subject_marks_figure_as_reconstructed(self):
+    def test_subject_shows_calculated_figure_without_alarm(self):
         label = pl_guard.subject_day_label(self.assessment)
-        self.assertIn("UNVERIFIED", label)
-        self.assertIn("reconstructed", label)
+        self.assertNotIn("UNVERIFIED", label)
+        self.assertIn("calculated", label)
         self.assertIn("-214", label)
         self.assertNotIn("26,293", label)
 
-    def test_banner_shows_rejected_and_reconstructed_figures(self):
+    def test_banner_is_a_short_note_with_only_the_calculated_figure(self):
         banner = pl_guard.email_banner(self.assessment)
-        self.assertIn("26,293.02", banner)
         self.assertIn("-214", banner)
-        self.assertIn("reconstructed", banner.lower())
+        self.assertIn("calculated", banner)
+        self.assertNotIn("26,293", banner)
+        self.assertNotIn("WARNING", banner)
+        self.assertEqual(banner.strip().count("\n"), 0)
 
-    def test_prompt_uses_reconstructed_moves_and_hides_broker_figures(self):
+    def test_banner_names_positions_without_a_figure(self):
+        positions = corrupt_oct15_positions()
+        positions.append(rpos("ODD", "OPTION", 1.0, 100.0, -90.0, None, 0.0, None))
+        assessment, _ = pl_guard.assess_with_reconstruction(portfolio_of(40000.0, positions))
+        self.assertIn("ODD", pl_guard.email_banner(assessment))
+
+    def test_unreconstructable_banner_still_warns_loudly(self):
+        assessment = pl_guard.assess_day_pl(portfolio_of(40000.0, corrupt_oct15_positions()))
+        self.assertIn("NOT TRUSTED", pl_guard.email_banner(assessment))
+
+    def test_prompt_uses_calculated_moves_and_hides_broker_figures(self):
         snapshot = "\n".join(pl_guard.snapshot_lines(self.positions, 40000.0, self.assessment))
-        self.assertIn("RECONSTRUCTED", snapshot)
+        self.assertIn("calculated", snapshot)
         self.assertIn("F:", snapshot)
         self.assertIn("+0.98% today", snapshot)
         for bogus in ("26,293", "-47.4", "-49.7", "2,409"):
             self.assertNotIn(bogus, snapshot)
 
-    def test_notice_explains_provenance_and_forbids_broker_figures(self):
+    def test_notice_keeps_model_off_data_quality_and_broker_figures(self):
         notice = pl_guard.integrity_notice(self.assessment).lower()
-        self.assertIn("reconstructed", notice)
+        self.assertIn("calculated", notice)
+        self.assertIn("do not comment", notice)
         self.assertIn("do not", notice)
         self.assertNotIn("26,293", notice)
 
