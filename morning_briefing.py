@@ -284,6 +284,10 @@ def build_briefing_prompt(
 
     lines = [
         f"Today is {today.strftime('%A, %B %d, %Y')}.",
+        f"This scan ran at {datetime.now().strftime('%I:%M %p').lstrip('0')}, during the trading day —",
+        "the market is still open. All values and day changes below are intraday, as of this scan.",
+        "Never say the portfolio 'closed at' or 'finished at' a value; use wording like",
+        "'as of this morning's scan' or 'at the time of this scan'.",
         "",
         "=== PORTFOLIO SNAPSHOT ===",
         *snapshot,
@@ -311,7 +315,7 @@ def build_briefing_prompt(
         "report in today's scan...'). Speculation is worse than silence.",
         "",
         "1. PORTFOLIO SUMMARY (2-3 sentences)",
-        "   - Overall performance today",
+        "   - Overall performance so far today (intraday, as of this scan)",
         "   - Notable movers — state the move, but only explain the cause if a news article",
         "     above supports it; otherwise leave the cause unattributed",
         "",
